@@ -4,14 +4,15 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-class MinecraftPinger
+namespace MinecraftPinger;
+public class Pinger
 {
     Socket? s;
     byte[] buf;
     public EndPoint? ep;
 
-    public delegate void PingCallback(string motd, MinecraftPinger pinger);
-    public delegate void FaillCallback(bool didConnect, MinecraftPinger pinger);
+    public delegate void PingCallback(string motd, Pinger pinger);
+    public delegate void FaillCallback(bool didConnect, Pinger pinger);
 
     PingCallback onok;
     FaillCallback onfaill;
@@ -21,14 +22,14 @@ class MinecraftPinger
 
     static ArrayPool<byte> pool = ArrayPool<byte>.Shared;
 
-    public MinecraftPinger(PingCallback cb, FaillCallback cb2)
+    public Pinger(PingCallback cb, FaillCallback cb2)
     {
         this.onok = cb;
         this.onfaill = cb2;
         this.buf = pool.Rent(32000);
     }
 
-    ~MinecraftPinger() => pool.Return(buf);
+    ~Pinger() => pool.Return(buf);
 
     public void StartChecking(IPEndPoint endPoint)
     {
@@ -62,7 +63,7 @@ class MinecraftPinger
 
     static void OnCo(IAsyncResult res)
     {
-        MinecraftPinger? pinger = (MinecraftPinger?)res.AsyncState;
+        Pinger? pinger = (Pinger?)res.AsyncState;
 
         if (pinger is null)
             throw new ArgumentException("Pinger should not be null");
@@ -96,7 +97,7 @@ class MinecraftPinger
 
     static void OnRCV(IAsyncResult res)
     {
-        MinecraftPinger? pinger = (MinecraftPinger?)res.AsyncState;
+        Pinger? pinger = (Pinger?)res.AsyncState;
 
         if (pinger is null)
             throw new ArgumentException("Pinger should not be null");
