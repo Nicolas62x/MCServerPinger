@@ -9,7 +9,8 @@ public class Pinger
 {
     Socket? s;
     byte[] buf;
-    public EndPoint? ep;
+    public IPEndPoint? ep;
+    public bool available;
 
     public delegate void PingCallback(string motd, Pinger pinger);
     public delegate void FaillCallback(bool didConnect, Pinger pinger);
@@ -22,23 +23,72 @@ public class Pinger
 
     static ArrayPool<byte> pool = ArrayPool<byte>.Shared;
 
-    public Pinger(PingCallback cb, FaillCallback cb2)
+    static PriorityQueue<Socket, DateTime> sockets = new PriorityQueue<Socket, DateTime>();
+    static object socketLock = new object();
+    static Task disposer = Task.Run(() =>
     {
-        this.onok = cb;
-        this.onfaill = cb2;
-        this.buf = pool.Rent(32000);
+        while (true)
+        {
+            try
+            {
+                Socket? s = null;
+                DateTime dt = DateTime.MinValue;
+                lock (socketLock)
+                    if (sockets.Count > 0)
+                        sockets.TryDequeue(out s, out dt);
+
+                while (dt > DateTime.Now)
+                    Thread.Sleep(5);
+
+                if (s is not null)
+                    s.Dispose();
+
+            }
+            catch (Exception)
+            {
+
+            }
+        }
+    });
+
+    public Pinger(PingCallback success, FaillCallback fail)
+    {
+        this.onok = success;
+        this.onfaill = fail;
+        this.buf = pool.Rent(32_768);
+        available = true;
     }
 
     ~Pinger() => pool.Return(buf);
 
-    public void StartChecking(IPEndPoint endPoint)
+    public void Get(IPEndPoint endPoint, int timeout = 10)
     {
         if (s is not null)
             throw new Exception("Previous connection was not finished");
 
         ep = endPoint;
 
+        Get(timeout);
+    }
+    public void Get(IPAddress addr, int timeout = 10)
+    {
+        if (s is not null)
+            throw new Exception("Previous connection was not finished");
+
+        if (ep is null)
+            ep = new IPEndPoint(addr, 25565);
+        else
+            ep.Address = addr;
+
+        Get(timeout);
+    }
+    void Get(int timeout)
+    {
+        available = false;
         s = new Socket(SocketType.Stream, ProtocolType.Tcp);
+
+        lock (socketLock)
+            sockets.Enqueue(s, DateTime.Now.AddSeconds(timeout));
 
         s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Linger, false);
         s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
@@ -47,12 +97,13 @@ public class Pinger
 
         try
         {
-            s.BeginConnect(endPoint, OnCo, this);
+            s.BeginConnect(ep, OnCo, this);
         }
         catch (Exception)
         {
             s.Dispose();
             s = null;
+            available = true;
         }
         
     }
@@ -83,6 +134,7 @@ public class Pinger
         {
             pinger.s.Dispose();
             pinger.s = null;
+            pinger.available = true;
 
             try
             {
@@ -151,7 +203,6 @@ public class Pinger
 
             string motd = Encoding.UTF8.GetString(pinger.buf, ptr, v.value);
 
-            pool.Return(pinger.buf);
             pinger.s.Dispose();
 
             try
@@ -172,5 +223,6 @@ public class Pinger
         }
 
         pinger.s = null;
+        pinger.available = true;
     }
 }
