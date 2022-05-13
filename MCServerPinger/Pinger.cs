@@ -21,6 +21,8 @@ public class Pinger
     int lastlen;
     bool didConnect;
 
+    int retry;
+
     static ArrayPool<byte> pool = ArrayPool<byte>.Shared;
 
     static PriorityQueue<Socket, DateTime> sockets = new PriorityQueue<Socket, DateTime>();
@@ -90,13 +92,15 @@ public class Pinger
         lock (socketLock)
             sockets.Enqueue(s, DateTime.Now.AddSeconds(timeout));
 
-        s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Linger, false);
-        s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.NoDelay, true);
+        
+        s.LingerState = new LingerOption(false, 0);
+        s.NoDelay = true;
         
         didConnect = false;
 
         try
         {
+            retry = 0;
             s.BeginConnect(ep, OnCo, this);
         }
         catch (Exception)
@@ -117,33 +121,69 @@ public class Pinger
         Pinger? pinger = (Pinger?)res.AsyncState;
 
         if (pinger is null)
-            throw new ArgumentException("Pinger should not be null");
+            return;
         if (pinger.s is null)
-            throw new ArgumentException("Socket should not be null");
+            return;
 
         try
         {
             pinger.s.EndConnect(res);
             pinger.didConnect = true;
 
-            pinger.s.BeginSend(mcRq, 0, mcRq.Length, SocketFlags.None, null, null);
-            pinger.lastlen = 0;
-            pinger.s.BeginReceive(pinger.buf, 0, pinger.buf.Length, SocketFlags.None, OnRCV, pinger);
+            pinger.s.BeginSend(mcRq, 0, mcRq.Length, SocketFlags.None, OnSND, pinger);            
         }
         catch (Exception)
         {
             pinger.s.Dispose();
-            pinger.s = null;
-            pinger.available = true;
 
             try
             {
                 pinger.onfaill(pinger.didConnect, pinger);
             }
-            catch (Exception e)
+            catch (Exception)
             {
-                Console.WriteLine(e);
             }
+
+            pinger.s = null;
+            pinger.available = true;
+        }
+    }
+
+    static void OnSND(IAsyncResult res)
+    {
+        Pinger? pinger = (Pinger?)res.AsyncState;
+
+        if (pinger is null)
+            return;
+        if (pinger.s is null)
+            return;
+        if (pinger.buf is null)
+            return;
+
+        try
+        {
+            if (pinger.s.EndSend(res) != mcRq.Length)
+                throw new Exception();
+
+            pinger.lastlen = 0;
+            pinger.s.BeginReceive(pinger.buf, 0, pinger.buf.Length, SocketFlags.None, OnRCV, pinger);
+
+        }
+        catch (Exception)
+        {
+            pinger.s.Dispose();
+
+            try
+            {
+                pinger.onfaill(pinger.didConnect, pinger);
+            }
+            catch (Exception)
+            {
+
+            }
+            
+            pinger.s = null;
+            pinger.available = true;
         }
     }
 
@@ -152,11 +192,11 @@ public class Pinger
         Pinger? pinger = (Pinger?)res.AsyncState;
 
         if (pinger is null)
-            throw new ArgumentException("Pinger should not be null");
+            return;
         if (pinger.s is null)
-            throw new ArgumentException("Socket should not be null");
+            return;
         if (pinger.buf is null)
-            throw new ArgumentException("Buffer should not be null");
+            return;
 
         try
         {
@@ -180,6 +220,9 @@ public class Pinger
 
             if (!v.finished || v.value + ptr > len)
             {
+                pinger.retry++;
+                if (pinger.retry > 10)
+                    throw new Exception("Too many retry");
                 pinger.s.BeginReceive(pinger.buf, pinger.lastlen, pinger.buf.Length - pinger.lastlen, SocketFlags.None, OnRCV, pinger);
                 return;
             }
@@ -217,9 +260,16 @@ public class Pinger
         }
         catch (Exception)
         {
-            pinger.s.Dispose();           
+            pinger.s.Dispose();
 
-            pinger.onfaill(pinger.didConnect, pinger);
+            try
+            {
+                pinger.onfaill(pinger.didConnect, pinger);
+            }
+            catch (Exception)
+            {
+
+            }            
         }
 
         pinger.s = null;
